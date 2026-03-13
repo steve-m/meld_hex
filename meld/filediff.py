@@ -584,6 +584,10 @@ class FileDiff(Gtk.Box, MeldDoc):
                                 Gdk.SELECTION_CLIPBOARD)
                             cb.set_text(text, -1)
                             return True
+                if event.keyval == Gdk.KEY_g and \
+                   event.state & Gdk.ModifierType.CONTROL_MASK:
+                    self.action_go_to_line()
+                    return True
         elif event.type == Gdk.EventType.KEY_RELEASE:
             self.keymask &= ~mod_key
 

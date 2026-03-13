@@ -374,7 +374,7 @@ class FileDiff(Gtk.Box, MeldDoc):
         state_actions = (
             ("text-filter", None, GLib.Variant.new_boolean(False)),
             ("hex-selection-coupling", self._on_hex_selection_coupling_changed,
-             GLib.Variant.new_boolean(False)),
+             GLib.Variant.new_boolean(True)),
         )
         for (name, callback, state) in state_actions:
             action = Gio.SimpleAction.new_stateful(name, None, state)

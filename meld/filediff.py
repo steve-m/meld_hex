@@ -844,9 +844,12 @@ class FileDiff(Gtk.Box, MeldDoc):
                 for side, line in ((0, start_a + i), (1, start_b + i)):
                     apply_diff_spans(bufs[side], tags[side], line, diff_set)
 
-        # Highlight data portion of unpaired extra lines
-        for i in range(paired, lines_a):
-            highlight_data_portion(bufs[0], tags[0], start_a + i)
+        # Highlight data portion of unpaired extra lines.
+        # In three-way mode, skip the center pane (bufs[0]) to avoid
+        # both comparisons overwriting each other's inline highlights.
+        if self.num_panes <= 2:
+            for i in range(paired, lines_a):
+                highlight_data_portion(bufs[0], tags[0], start_a + i)
         for i in range(paired, lines_b):
             highlight_data_portion(bufs[1], tags[1], start_b + i)
 

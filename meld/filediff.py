@@ -894,7 +894,8 @@ class FileDiff(Gtk.Box, MeldDoc):
         if tag is None:
             tag = buf.create_tag(
                 'hex-highlight',
-                background_rgba=Gdk.RGBA(0.4, 0.4, 0.4, 0.25),
+                background_rgba=Gdk.RGBA(0.0, 0.0, 0.0, 1.0),
+                foreground_rgba=Gdk.RGBA(1.0, 1.0, 1.0, 1.0),
             )
             tag.set_priority(buf.get_tag_table().get_size() - 1)
         return tag

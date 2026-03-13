@@ -309,6 +309,10 @@ class MeldStatusBar(Gtk.Statusbar):
             '/org/gnome/meld/ui/statusbar-menu.ui')
         menu = builder.get_object('statusbar-menu')
 
+        if getattr(self, '_hex_mode', False):
+            menu.append(
+                _('Selection coupling'), 'hex-selection-coupling')
+
         pop = Gtk.Popover()
         pop.bind_model(menu, 'view-local')
         pop.set_position(Gtk.PositionType.TOP)

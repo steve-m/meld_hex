@@ -62,8 +62,5 @@
     <section>
       <attribute name="id">syncpoint-section</attribute>
     </section>
-    <section>
-      <attribute name="id">hex-section</attribute>
-    </section>
   </menu>
 </interface>

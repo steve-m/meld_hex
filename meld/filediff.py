@@ -305,11 +305,11 @@ class FileDiff(Gtk.Box, MeldDoc):
             'wrap-mode-bool',
         ]
 
-        prop_action_group = Gio.SimpleActionGroup()
+        self.prop_action_group = Gio.SimpleActionGroup()
         for prop in sourceview_prop_actions:
             action = make_multiobject_property_action(self.textview, prop)
-            prop_action_group.add_action(action)
-        self.insert_action_group('view-local', prop_action_group)
+            self.prop_action_group.add_action(action)
+        self.insert_action_group('view-local', self.prop_action_group)
 
         # Set up per-view action group for top-level menu insertion
         self.view_action_group = Gio.SimpleActionGroup()
@@ -373,9 +373,15 @@ class FileDiff(Gtk.Box, MeldDoc):
 
         state_actions = (
             ("text-filter", None, GLib.Variant.new_boolean(False)),
-            ("hex-selection-coupling", self._on_hex_selection_coupling_changed,
-             GLib.Variant.new_boolean(True)),
         )
+
+        # Selection coupling for hex mode (in view-local group for Display menu)
+        hex_coupling = Gio.SimpleAction.new_stateful(
+            "hex-selection-coupling", None,
+            GLib.Variant.new_boolean(True))
+        hex_coupling.connect(
+            "change-state", self._on_hex_selection_coupling_changed)
+        self.prop_action_group.add_action(hex_coupling)
         for (name, callback, state) in state_actions:
             action = Gio.SimpleAction.new_stateful(name, None, state)
             if callback:
@@ -1211,7 +1217,7 @@ class FileDiff(Gtk.Box, MeldDoc):
 
     def _hex_clear_coupled_highlights(self, active_pane):
         """Clear highlights on all panes except the active one."""
-        action = self.view_action_group.lookup_action(
+        action = self.prop_action_group.lookup_action(
             'hex-selection-coupling')
         if not action or not action.get_state().get_boolean():
             return
@@ -1221,7 +1227,7 @@ class FileDiff(Gtk.Box, MeldDoc):
 
     def _hex_update_coupled_highlights(self, active_pane, byte_address):
         """Highlight the same byte address on all other panes if coupled."""
-        action = self.view_action_group.lookup_action(
+        action = self.prop_action_group.lookup_action(
             'hex-selection-coupling')
         if not action or not action.get_state().get_boolean():
             return
@@ -2066,16 +2072,6 @@ class FileDiff(Gtk.Box, MeldDoc):
         section = Gio.MenuItem.new_section(None, syncpoint_menu)
         section.set_attribute([("id", "s", "syncpoint-section")])
         replace_menu_section(self.popup_menu_model, section)
-
-        hex_menu = Gio.Menu()
-        if getattr(self, '_hex_mode', False):
-            hex_menu.append(
-                label=_("Enable Selection Coupling"),
-                detailed_action='view.hex-selection-coupling',
-            )
-        hex_section = Gio.MenuItem.new_section(None, hex_menu)
-        hex_section.set_attribute([("id", "s", "hex-section")])
-        replace_menu_section(self.popup_menu_model, hex_section)
 
         self.popup_menu = Gtk.Menu.new_from_model(self.popup_menu_model)
         self.popup_menu.attach_to_widget(self)

@@ -2422,40 +2422,93 @@ class FileDiff(Gtk.Box, MeldDoc):
         else:
             yield 1
 
+    def _hex_positional_opcodes(self, seq_a, seq_b):
+        """Create positional diff opcodes for hex dumps.
+
+        Instead of sequence matching (which fails when hex content
+        differs), compare lines at the same offset directly.  This
+        produces fine-grained equal/replace/delete chunks.
+        """
+        from meld.matchers.myers import DiffChunk
+
+        opcodes = []
+        min_len = min(len(seq_a), len(seq_b))
+        i = 0
+        while i < min_len:
+            if seq_a[i] == seq_b[i]:
+                # Find run of equal lines
+                j = i + 1
+                while j < min_len and seq_a[j] == seq_b[j]:
+                    j += 1
+                # equal chunks are excluded by get_difference_opcodes
+                i = j
+            else:
+                # Find run of differing lines
+                j = i + 1
+                while j < min_len and seq_a[j] != seq_b[j]:
+                    j += 1
+                opcodes.append(DiffChunk._make(
+                    ('replace', i, j, i, j)))
+                i = j
+        # Remaining lines in the longer sequence
+        if len(seq_a) > min_len:
+            opcodes.append(DiffChunk._make(
+                ('delete', min_len, len(seq_a), min_len, min_len)))
+        elif len(seq_b) > min_len:
+            opcodes.append(DiffChunk._make(
+                ('insert', min_len, min_len, min_len, len(seq_b))))
+        return opcodes
+
     def _diff_files(self, refresh=False):
         yield _("[%s] Computing differences") % self.label_text
         texts = self.buffer_filtered[:self.num_panes]
         self.linediffer.ignore_blanks = self.props.ignore_blank_lines
-        step = self.linediffer.set_sequences_iter(texts)
-        while next(step) is None:
-            yield 1
 
-        # In hex mode, conflicts are not meaningful since we do
-        # byte-level comparison.  Convert them to replace so the
-        # background shows as "changed" instead of "conflict".
-        if getattr(self, '_hex_mode', False) and self.num_panes == 3:
-            from meld.matchers.myers import DiffChunk
-            new_cache = []
-            for c0, c1 in self.linediffer._merge_cache:
-                if c0 and c0.tag == 'conflict':
-                    c0 = DiffChunk._make(
-                        ('replace',) + tuple(c0)[1:])
-                if c1 and c1.tag == 'conflict':
-                    c1 = DiffChunk._make(
-                        ('replace',) + tuple(c1)[1:])
-                new_cache.append((c0, c1))
-            self.linediffer._merge_cache = new_cache
-            self.linediffer.conflicts = []
-            # Refresh chunkmaps and gutters with corrected tags
-            for pane in range(self.num_panes):
-                self.chunkmap[pane].chunks = list(
-                    self.linediffer.single_changes(pane))
-            for gutter in self.actiongutter:
-                from_pane = self.textview.index(gutter.source_view)
-                to_pane = self.textview.index(gutter.target_view)
-                gutter.chunks = list(
-                    self.linediffer.paired_all_single_changes(
-                        from_pane, to_pane))
+        if getattr(self, '_hex_mode', False):
+            # Use positional comparison for hex mode instead of
+            # sequence matching, since hex lines at the same offset
+            # should be compared directly.
+            self.linediffer.diffs = [[], []]
+            self.linediffer.num_sequences = len(texts)
+            self.linediffer.seqlength = [len(s) for s in texts]
+            for i in range(len(texts) - 1):
+                self.linediffer.diffs[i] = self._hex_positional_opcodes(
+                    texts[1], texts[i * 2])
+            self.linediffer._initialised = True
+            self.linediffer._update_merge_cache(texts)
+
+            # In three-way hex mode, convert conflicts to replace since
+            # byte-level inline highlighting handles the actual diffs
+            if self.num_panes == 3:
+                from meld.matchers.myers import DiffChunk
+                new_cache = []
+                for c0, c1 in self.linediffer._merge_cache:
+                    if c0 and c0.tag == 'conflict':
+                        c0 = DiffChunk._make(
+                            ('replace',) + tuple(c0)[1:])
+                    if c1 and c1.tag == 'conflict':
+                        c1 = DiffChunk._make(
+                            ('replace',) + tuple(c1)[1:])
+                    new_cache.append((c0, c1))
+                self.linediffer._merge_cache = new_cache
+                self.linediffer.conflicts = []
+                self.linediffer._update_line_cache()
+                # Re-populate chunkmaps/gutters with corrected tags
+                for pane in range(self.num_panes):
+                    self.chunkmap[pane].chunks = list(
+                        self.linediffer.single_changes(pane))
+                for gutter in self.actiongutter:
+                    fp = self.textview.index(gutter.source_view)
+                    tp = self.textview.index(gutter.target_view)
+                    gutter.chunks = list(
+                        self.linediffer.paired_all_single_changes(
+                            fp, tp))
+
+            yield 1
+        else:
+            step = self.linediffer.set_sequences_iter(texts)
+            while next(step) is None:
+                yield 1
 
         if not refresh:
             for buf in self.textbuffer:
@@ -2569,10 +2622,16 @@ class FileDiff(Gtk.Box, MeldDoc):
             list(added_chunks) + [modified_chunks], key=merged_chunk_order)
 
         alltags = [b.get_tag_table().lookup("inline") for b in self.textbuffer]
+        hex_mode = getattr(self, '_hex_mode', False)
 
         for chunks in need_clearing:
             for i, chunk in enumerate(chunks):
-                if not chunk or chunk.tag != "replace":
+                if not chunk:
+                    continue
+                if hex_mode:
+                    if chunk.tag not in ('replace', 'conflict'):
+                        continue
+                elif chunk.tag != "replace":
                     continue
                 to_idx = 2 if i == 1 else 0
                 bufs = self.textbuffer[1], self.textbuffer[to_idx]
@@ -2584,7 +2643,12 @@ class FileDiff(Gtk.Box, MeldDoc):
         for chunks in need_highlighting:
             clear = chunks == modified_chunks
             for merge_cache_index, chunk in enumerate(chunks):
-                if not chunk or chunk[0] != "replace":
+                if not chunk:
+                    continue
+                if hex_mode:
+                    if chunk[0] not in ('replace', 'conflict'):
+                        continue
+                elif chunk[0] != "replace":
                     continue
                 to_pane = 2 if merge_cache_index == 1 else 0
                 bufs = self.textbuffer[1], self.textbuffer[to_pane]

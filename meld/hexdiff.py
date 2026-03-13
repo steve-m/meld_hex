@@ -202,6 +202,13 @@ def prepare_hex_filediff(doc, gfiles):
         sb._hex_mode = True
         sb._line_column_text = "{line}"
 
+    # Disable find actions so Ctrl+G accelerator doesn't intercept
+    # our go-to-address binding
+    for action_name in ('find', 'find-next', 'find-previous', 'find-replace'):
+        action = doc.view_action_group.lookup_action(action_name)
+        if action:
+            action.set_enabled(False)
+
     # Connect mouse events for hex-area-constrained selection
     doc._hex_sel = None  # {anchor, cursor, area, pane}
     doc._hex_dragging = False

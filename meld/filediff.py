@@ -373,6 +373,8 @@ class FileDiff(Gtk.Box, MeldDoc):
 
         state_actions = (
             ("text-filter", None, GLib.Variant.new_boolean(False)),
+            ("hex-selection-coupling", self._on_hex_selection_coupling_changed,
+             GLib.Variant.new_boolean(False)),
         )
         for (name, callback, state) in state_actions:
             action = Gio.SimpleAction.new_stateful(name, None, state)
@@ -559,6 +561,12 @@ class FileDiff(Gtk.Box, MeldDoc):
             self.keymask |= mod_key
             if event.keyval == Gdk.KEY_Escape:
                 self.findbar.hide()
+            if getattr(self, '_hex_mode', False) and \
+               event.keyval in (Gdk.KEY_Left, Gdk.KEY_Right,
+                                Gdk.KEY_Up, Gdk.KEY_Down,
+                                Gdk.KEY_Home, Gdk.KEY_End):
+                if self._hex_handle_arrow(object, event.keyval):
+                    return True
         elif event.type == Gdk.EventType.KEY_RELEASE:
             self.keymask &= ~mod_key
 
@@ -777,6 +785,85 @@ class FileDiff(Gtk.Box, MeldDoc):
         for i in range(paired, lines_b):
             highlight_data_portion(bufs[1], tags[1], start_b + i)
 
+    def _hex_handle_arrow(self, widget, keyval):
+        """Handle arrow key navigation in hex mode, moving byte-by-byte.
+
+        Returns True if the key was handled (to suppress default movement).
+        """
+        from meld.hexdiff import (
+            BYTES_PER_ROW, byte_index_from_col, hex_positions_for_byte,
+        )
+
+        if widget not in self.textview:
+            return False
+        pane = self.textview.index(widget)
+        buf = self.textbuffer[pane]
+        cursor_it = buf.get_iter_at_mark(buf.get_insert())
+        line = cursor_it.get_line()
+        col = cursor_it.get_line_offset()
+        byte_idx = byte_index_from_col(col)
+        # Last data line (skip empty line after trailing newline)
+        total_lines = buf.get_line_count()
+        end_it = buf.get_iter_at_line(total_lines - 1)
+        if end_it.get_chars_in_line() == 0 and total_lines > 1:
+            last_line = total_lines - 2
+        else:
+            last_line = total_lines - 1
+
+        # If cursor is not on a data byte, snap to byte 0 of current line
+        if byte_idx is None:
+            byte_idx = 0
+
+        if keyval == Gdk.KEY_Right:
+            if byte_idx < BYTES_PER_ROW - 1:
+                byte_idx += 1
+            elif line < last_line:
+                line += 1
+                byte_idx = 0
+            else:
+                return True
+        elif keyval == Gdk.KEY_Left:
+            if byte_idx > 0:
+                byte_idx -= 1
+            elif line > 0:
+                line -= 1
+                byte_idx = BYTES_PER_ROW - 1
+            else:
+                return True
+        elif keyval == Gdk.KEY_Down:
+            if line < last_line:
+                line += 1
+            else:
+                return True
+        elif keyval == Gdk.KEY_Up:
+            if line > 0:
+                line -= 1
+            else:
+                return True
+        elif keyval == Gdk.KEY_Home:
+            byte_idx = 0
+        elif keyval == Gdk.KEY_End:
+            byte_idx = BYTES_PER_ROW - 1
+
+        hex_start, _, _ = hex_positions_for_byte(byte_idx)
+        target_it = buf.get_iter_at_line_offset(line, hex_start)
+        buf.place_cursor(target_it)
+        widget.scroll_to_mark(buf.get_insert(), 0.1, False, 0, 0)
+        return True
+
+    def _on_hex_selection_coupling_changed(self, action, state):
+        action.set_state(state)
+        focused_pane = self._get_focused_pane()
+        if state.get_boolean():
+            if focused_pane != -1:
+                buf = self.textbuffer[focused_pane]
+                cursor_it = buf.get_iter_at_mark(buf.get_insert())
+                self._update_hex_highlight(focused_pane, buf, cursor_it)
+        else:
+            for p in range(self.num_panes):
+                if p != focused_pane:
+                    self._hex_clear_highlight(p)
+
     def _get_hex_highlight_tag(self, buf):
         """Get or create the tag used for hex/ASCII cross-highlighting."""
         tag = buf.get_tag_table().lookup('hex-highlight')
@@ -788,37 +875,49 @@ class FileDiff(Gtk.Box, MeldDoc):
             tag.set_priority(buf.get_tag_table().get_size() - 1)
         return tag
 
-    def _update_hex_highlight(self, pane, buf, cursor_it):
-        """Highlight the hex byte and its ASCII representation."""
-        from meld.hexdiff import byte_index_from_col, hex_positions_for_byte
-
+    def _hex_clear_highlight(self, pane):
+        """Remove hex highlight from a single pane."""
+        if not hasattr(self, '_hex_highlight_prev'):
+            self._hex_highlight_prev = {}
+        prev = self._hex_highlight_prev.get(pane)
+        if prev is None:
+            return
+        buf = self.textbuffer[pane]
         tag = self._get_hex_highlight_tag(buf)
+        prev_line, prev_hs, prev_he, prev_ac = prev
+        line_it = buf.get_iter_at_line(prev_line)
+        line_chars = line_it.get_chars_in_line()
+        if line_chars > prev_he:
+            s = buf.get_iter_at_line_offset(prev_line, prev_hs)
+            e = buf.get_iter_at_line_offset(prev_line, prev_he)
+            buf.remove_tag(tag, s, e)
+        if line_chars > prev_ac + 1:
+            s = buf.get_iter_at_line_offset(prev_line, prev_ac)
+            e = buf.get_iter_at_line_offset(prev_line, prev_ac + 1)
+            buf.remove_tag(tag, s, e)
+        self._hex_highlight_prev[pane] = None
 
-        # Remove previous highlight efficiently
-        prev = getattr(self, '_hex_highlight_prev', {}).get(pane)
-        if prev is not None:
-            prev_line, prev_hs, prev_he, prev_ac = prev
-            line_it = buf.get_iter_at_line(prev_line)
-            line_chars = line_it.get_chars_in_line()
-            if line_chars > prev_he:
-                s = buf.get_iter_at_line_offset(prev_line, prev_hs)
-                e = buf.get_iter_at_line_offset(prev_line, prev_he)
-                buf.remove_tag(tag, s, e)
-            if line_chars > prev_ac + 1:
-                s = buf.get_iter_at_line_offset(prev_line, prev_ac)
-                e = buf.get_iter_at_line_offset(prev_line, prev_ac + 1)
-                buf.remove_tag(tag, s, e)
+    def _hex_apply_highlight(self, pane, byte_address):
+        """Highlight the byte at byte_address in the given pane.
 
-        line = cursor_it.get_line()
-        col = cursor_it.get_line_offset()
-        byte_idx = byte_index_from_col(col)
+        Returns False if the address is out of range for this pane's buffer.
+        """
+        from meld.hexdiff import (
+            BYTES_PER_ROW, hex_positions_for_byte,
+        )
 
+        buf = self.textbuffer[pane]
+        tag = self._get_hex_highlight_tag(buf)
         if not hasattr(self, '_hex_highlight_prev'):
             self._hex_highlight_prev = {}
 
-        if byte_idx is None:
+        line = byte_address // BYTES_PER_ROW
+        byte_idx = byte_address % BYTES_PER_ROW
+
+        # Check if the line exists in this buffer
+        if line >= buf.get_line_count():
             self._hex_highlight_prev[pane] = None
-            return
+            return False
 
         hex_start, hex_end, ascii_col = hex_positions_for_byte(byte_idx)
 
@@ -829,6 +928,9 @@ class FileDiff(Gtk.Box, MeldDoc):
             s = buf.get_iter_at_line_offset(line, hex_start)
             e = buf.get_iter_at_line_offset(line, hex_end)
             buf.apply_tag(tag, s, e)
+        else:
+            self._hex_highlight_prev[pane] = None
+            return False
         if line_chars > ascii_col + 1:
             s = buf.get_iter_at_line_offset(line, ascii_col)
             e = buf.get_iter_at_line_offset(line, ascii_col + 1)
@@ -836,6 +938,55 @@ class FileDiff(Gtk.Box, MeldDoc):
 
         self._hex_highlight_prev[pane] = (
             line, hex_start, hex_end, ascii_col)
+        return True
+
+    def _update_hex_highlight(self, pane, buf, cursor_it):
+        """Highlight the hex byte and its ASCII representation."""
+        from meld.hexdiff import (
+            byte_index_from_col, hex_address_from_cursor,
+        )
+
+        if not hasattr(self, '_hex_highlight_prev'):
+            self._hex_highlight_prev = {}
+
+        # Clear previous highlight on the active pane
+        self._hex_clear_highlight(pane)
+
+        line = cursor_it.get_line()
+        col = cursor_it.get_line_offset()
+        byte_idx = byte_index_from_col(col)
+
+        if byte_idx is None:
+            # Clear coupled panes too
+            self._hex_clear_coupled_highlights(pane)
+            return
+
+        byte_address = hex_address_from_cursor(line, col)
+        self._hex_apply_highlight(pane, byte_address)
+
+        # Update coupled panes
+        self._hex_update_coupled_highlights(pane, byte_address)
+
+    def _hex_clear_coupled_highlights(self, active_pane):
+        """Clear highlights on all panes except the active one."""
+        action = self.view_action_group.lookup_action(
+            'hex-selection-coupling')
+        if not action or not action.get_state().get_boolean():
+            return
+        for p in range(self.num_panes):
+            if p != active_pane:
+                self._hex_clear_highlight(p)
+
+    def _hex_update_coupled_highlights(self, active_pane, byte_address):
+        """Highlight the same byte address on all other panes if coupled."""
+        action = self.view_action_group.lookup_action(
+            'hex-selection-coupling')
+        if not action or not action.get_state().get_boolean():
+            return
+        for p in range(self.num_panes):
+            if p != active_pane:
+                self._hex_clear_highlight(p)
+                self._hex_apply_highlight(p, byte_address)
 
     def on_current_diff_changed(self, *args):
         try:
@@ -1673,6 +1824,16 @@ class FileDiff(Gtk.Box, MeldDoc):
         section = Gio.MenuItem.new_section(None, syncpoint_menu)
         section.set_attribute([("id", "s", "syncpoint-section")])
         replace_menu_section(self.popup_menu_model, section)
+
+        hex_menu = Gio.Menu()
+        if getattr(self, '_hex_mode', False):
+            hex_menu.append(
+                label=_("Enable Selection Coupling"),
+                detailed_action='view.hex-selection-coupling',
+            )
+        hex_section = Gio.MenuItem.new_section(None, hex_menu)
+        hex_section.set_attribute([("id", "s", "hex-section")])
+        replace_menu_section(self.popup_menu_model, hex_section)
 
         self.popup_menu = Gtk.Menu.new_from_model(self.popup_menu_model)
         self.popup_menu.attach_to_widget(self)

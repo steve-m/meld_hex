@@ -749,8 +749,8 @@ class FileDiff(Gtk.Box, MeldDoc):
 
         def highlight_data_portion(buf, tag, line_num):
             it = buf.get_iter_at_line(line_num)
-            if it.get_chars_in_line() > 10:
-                s = buf.get_iter_at_line_offset(line_num, 10)
+            if it.get_chars_in_line() > 11:
+                s = buf.get_iter_at_line_offset(line_num, 11)
                 e = it.copy()
                 if not e.ends_line():
                     e.forward_to_line_end()

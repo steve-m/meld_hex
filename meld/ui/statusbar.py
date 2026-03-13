@@ -231,6 +231,9 @@ class MeldStatusBar(Gtk.Statusbar):
 
         def format_cursor_position(binding, cursor):
             line, offset = cursor
+            if getattr(self, '_hex_mode', False):
+                from meld.hexdiff import format_hex_address
+                return format_hex_address(line + 1)
             return self._line_column_text.format(
                 line=line + 1, column=offset + 1)
 

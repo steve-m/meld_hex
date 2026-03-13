@@ -24,6 +24,11 @@ BYTES_PER_ROW = 16
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
+def format_hex_address(addr):
+    """Format a byte address as 0000:0000."""
+    return f'{(addr >> 16) & 0xFFFF:04X}:{addr & 0xFFFF:04X}'
+
+
 def file_is_binary(gfile):
     """Detect if a file is binary by checking for null bytes in the first 8KB."""
     if not gfile:
@@ -88,7 +93,7 @@ def _format_hex_line(offset, data):
         else:
             ascii_repr.append(' ')
 
-    return f'{offset:08X}  {left}  {right}  |{"".join(ascii_repr)}|'
+    return f'{format_hex_address(offset)}  {left}  {right}  |{"".join(ascii_repr)}|'
 
 
 def _format_hex_dump(data):
@@ -118,22 +123,22 @@ def byte_index_from_col(col):
     Returns None if the column is not on a data byte (e.g. offset area,
     separators, or pipe characters).
 
-    Line format (78 chars):
-    00000000  XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX  |................|
-    cols:     0         1111111111222222222233333333334444444444555555555566666666667777777
-              0123456789012345678901234567890123456789012345678901234567890123456789012345678
+    Line format (79 chars):
+    0000:0000  XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX  |................|
+    cols:      0         1111111111222222222233333333334444444444555555555566666666667777777778
+               01234567890123456789012345678901234567890123456789012345678901234567890123456789
 
-    Offset area: cols 0-7
-    Left hex group (bytes 0-7): cols 10-33
-    Right hex group (bytes 8-15): cols 35-58
-    ASCII area (bytes 0-15): cols 61-76
+    Offset area: cols 0-8
+    Left hex group (bytes 0-7): cols 11-34
+    Right hex group (bytes 8-15): cols 36-59
+    ASCII area (bytes 0-15): cols 62-77
     """
-    if 10 <= col < 34:
-        return min((col - 10) // 3, 7)
-    elif 35 <= col < 59:
-        return 8 + min((col - 35) // 3, 7)
-    elif 61 <= col < 77:
-        return col - 61
+    if 11 <= col < 35:
+        return min((col - 11) // 3, 7)
+    elif 36 <= col < 60:
+        return 8 + min((col - 36) // 3, 7)
+    elif 62 <= col < 78:
+        return col - 62
     return None
 
 
@@ -144,10 +149,10 @@ def hex_positions_for_byte(byte_idx):
     ascii_col is the column of the single ASCII representation character.
     """
     if byte_idx < 8:
-        hex_start = 10 + byte_idx * 3
+        hex_start = 11 + byte_idx * 3
     else:
-        hex_start = 35 + (byte_idx - 8) * 3
-    return (hex_start, hex_start + 2, 61 + byte_idx)
+        hex_start = 36 + (byte_idx - 8) * 3
+    return (hex_start, hex_start + 2, 62 + byte_idx)
 
 
 def hex_address_from_cursor(line, col):
@@ -195,7 +200,7 @@ def prepare_hex_filediff(doc, gfiles):
     # Change status bar format and enable hex mode input
     for sb in doc.statusbar[:len(gfiles)]:
         sb._hex_mode = True
-        sb._line_column_text = "0x{line:08X}"
+        sb._line_column_text = "{line}"
 
     # Connect mouse events for hex-area-constrained selection
     doc._hex_sel = None  # {anchor, cursor, area, pane}

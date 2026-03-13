@@ -196,3 +196,11 @@ def prepare_hex_filediff(doc, gfiles):
     for sb in doc.statusbar[:len(gfiles)]:
         sb._hex_mode = True
         sb._line_column_text = "0x{line:08X}"
+
+    # Connect mouse events for hex-area-constrained selection
+    doc._hex_sel = None  # {anchor, cursor, area, pane}
+    doc._hex_dragging = False
+    for tv in doc.textview:
+        tv.connect('button-press-event', doc._hex_on_button_press)
+        tv.connect('motion-notify-event', doc._hex_on_motion)
+        tv.connect('button-release-event', doc._hex_on_button_release)

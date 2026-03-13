@@ -561,12 +561,23 @@ class FileDiff(Gtk.Box, MeldDoc):
             self.keymask |= mod_key
             if event.keyval == Gdk.KEY_Escape:
                 self.findbar.hide()
-            if getattr(self, '_hex_mode', False) and \
-               event.keyval in (Gdk.KEY_Left, Gdk.KEY_Right,
-                                Gdk.KEY_Up, Gdk.KEY_Down,
-                                Gdk.KEY_Home, Gdk.KEY_End):
-                if self._hex_handle_arrow(object, event.keyval):
-                    return True
+            if getattr(self, '_hex_mode', False):
+                if event.keyval in (Gdk.KEY_Left, Gdk.KEY_Right,
+                                    Gdk.KEY_Up, Gdk.KEY_Down,
+                                    Gdk.KEY_Home, Gdk.KEY_End):
+                    shift = bool(event.state & Gdk.ModifierType.SHIFT_MASK)
+                    if self._hex_handle_arrow(object, event.keyval, shift):
+                        return True
+                if event.keyval == Gdk.KEY_c and \
+                   event.state & Gdk.ModifierType.CONTROL_MASK:
+                    sel = getattr(self, '_hex_sel', None)
+                    if sel and sel['anchor'] != sel['cursor']:
+                        text = self._hex_get_selection_text(sel)
+                        if text and object in self.textview:
+                            cb = object.get_clipboard(
+                                Gdk.SELECTION_CLIPBOARD)
+                            cb.set_text(text, -1)
+                            return True
         elif event.type == Gdk.EventType.KEY_RELEASE:
             self.keymask &= ~mod_key
 
@@ -809,13 +820,50 @@ class FileDiff(Gtk.Box, MeldDoc):
         for i in range(paired, lines_b):
             highlight_data_portion(bufs[1], tags[1], start_b + i)
 
-    def _hex_handle_arrow(self, widget, keyval):
+    def _hex_last_data_line(self, buf):
+        """Return the last hex data line index (skip trailing empty line)."""
+        total = buf.get_line_count()
+        end_it = buf.get_iter_at_line(total - 1)
+        if end_it.get_chars_in_line() == 0 and total > 1:
+            return total - 2
+        return total - 1
+
+    def _hex_byte_addr(self, line, byte_idx):
+        from meld.hexdiff import BYTES_PER_ROW
+        return line * BYTES_PER_ROW + byte_idx
+
+    def _hex_move_target(self, line, byte_idx, last_line, keyval):
+        """Compute new (line, byte_idx) after an arrow key press."""
+        from meld.hexdiff import BYTES_PER_ROW
+        if keyval == Gdk.KEY_Right:
+            if byte_idx < BYTES_PER_ROW - 1:
+                byte_idx += 1
+            elif line < last_line:
+                line, byte_idx = line + 1, 0
+        elif keyval == Gdk.KEY_Left:
+            if byte_idx > 0:
+                byte_idx -= 1
+            elif line > 0:
+                line, byte_idx = line - 1, BYTES_PER_ROW - 1
+        elif keyval == Gdk.KEY_Down:
+            if line < last_line:
+                line += 1
+        elif keyval == Gdk.KEY_Up:
+            if line > 0:
+                line -= 1
+        elif keyval == Gdk.KEY_Home:
+            byte_idx = 0
+        elif keyval == Gdk.KEY_End:
+            byte_idx = BYTES_PER_ROW - 1
+        return line, byte_idx
+
+    def _hex_handle_arrow(self, widget, keyval, shift=False):
         """Handle arrow key navigation in hex mode, moving byte-by-byte.
 
         Returns True if the key was handled (to suppress default movement).
         """
         from meld.hexdiff import (
-            BYTES_PER_ROW, byte_index_from_col, hex_positions_for_byte,
+            byte_index_from_col, hex_positions_for_byte,
         )
 
         if widget not in self.textview:
@@ -826,54 +874,223 @@ class FileDiff(Gtk.Box, MeldDoc):
         line = cursor_it.get_line()
         col = cursor_it.get_line_offset()
         byte_idx = byte_index_from_col(col)
-        # Last data line (skip empty line after trailing newline)
-        total_lines = buf.get_line_count()
-        end_it = buf.get_iter_at_line(total_lines - 1)
-        if end_it.get_chars_in_line() == 0 and total_lines > 1:
-            last_line = total_lines - 2
-        else:
-            last_line = total_lines - 1
+        last_line = self._hex_last_data_line(buf)
 
-        # If cursor is not on a data byte, snap to byte 0 of current line
         if byte_idx is None:
             byte_idx = 0
 
-        if keyval == Gdk.KEY_Right:
-            if byte_idx < BYTES_PER_ROW - 1:
-                byte_idx += 1
-            elif line < last_line:
-                line += 1
-                byte_idx = 0
-            else:
-                return True
-        elif keyval == Gdk.KEY_Left:
-            if byte_idx > 0:
-                byte_idx -= 1
-            elif line > 0:
-                line -= 1
-                byte_idx = BYTES_PER_ROW - 1
-            else:
-                return True
-        elif keyval == Gdk.KEY_Down:
-            if line < last_line:
-                line += 1
-            else:
-                return True
-        elif keyval == Gdk.KEY_Up:
-            if line > 0:
-                line -= 1
-            else:
-                return True
-        elif keyval == Gdk.KEY_Home:
-            byte_idx = 0
-        elif keyval == Gdk.KEY_End:
-            byte_idx = BYTES_PER_ROW - 1
+        new_line, new_byte_idx = self._hex_move_target(
+            line, byte_idx, last_line, keyval)
 
-        hex_start, _, _ = hex_positions_for_byte(byte_idx)
-        target_it = buf.get_iter_at_line_offset(line, hex_start)
+        hex_start, _, _ = hex_positions_for_byte(new_byte_idx)
+        target_it = buf.get_iter_at_line_offset(new_line, hex_start)
         buf.place_cursor(target_it)
         widget.scroll_to_mark(buf.get_insert(), 0.1, False, 0, 0)
+
+        new_addr = self._hex_byte_addr(new_line, new_byte_idx)
+        sel = getattr(self, '_hex_sel', None)
+
+        if shift:
+            if sel and sel['pane'] == pane:
+                sel['cursor'] = new_addr
+            else:
+                old_addr = self._hex_byte_addr(line, byte_idx)
+                self._hex_sel = {
+                    'anchor': old_addr, 'cursor': new_addr,
+                    'area': 'hex', 'pane': pane,
+                }
+            self._hex_update_selection_display()
+        else:
+            if sel and sel['pane'] == pane:
+                self._hex_sel = None
+                self._hex_update_selection_display()
+
         return True
+
+    # -- Hex selection: mouse handlers --
+
+    def _hex_coords_to_byte(self, textview, x, y):
+        """Convert widget coordinates to (byte_address, area) or None.
+
+        area is 'hex' or 'ascii'.
+        """
+        from meld.hexdiff import (
+            BYTES_PER_ROW, byte_index_from_col, hex_positions_for_byte,
+        )
+        bx, by = textview.window_to_buffer_coords(
+            Gtk.TextWindowType.WIDGET, int(x), int(y))
+        over_text, it = textview.get_iter_at_location(bx, by)
+        line = it.get_line()
+        col = it.get_line_offset()
+        byte_idx = byte_index_from_col(col)
+        if byte_idx is None:
+            return None
+        addr = line * BYTES_PER_ROW + byte_idx
+        area = 'ascii' if 61 <= col < 77 else 'hex'
+        return addr, area
+
+    def _hex_on_button_press(self, textview, event):
+        if event.button != 1:
+            return False
+        result = self._hex_coords_to_byte(textview, event.x, event.y)
+        if result is None:
+            # Click outside data area — clear selection, suppress default
+            self._hex_sel = None
+            self._hex_update_selection_display()
+            textview.grab_focus()
+            return True
+        addr, area = result
+        pane = self.textview.index(textview)
+
+        # Place cursor at the byte position
+        from meld.hexdiff import hex_positions_for_byte, BYTES_PER_ROW
+        byte_idx = addr % BYTES_PER_ROW
+        line = addr // BYTES_PER_ROW
+        hex_start, _, _ = hex_positions_for_byte(byte_idx)
+        buf = self.textbuffer[pane]
+        target_it = buf.get_iter_at_line_offset(line, hex_start)
+        buf.place_cursor(target_it)
+
+        shift = bool(event.state & Gdk.ModifierType.SHIFT_MASK)
+        sel = getattr(self, '_hex_sel', None)
+        if shift and sel and sel['pane'] == pane:
+            sel['cursor'] = addr
+        else:
+            self._hex_sel = {
+                'anchor': addr, 'cursor': addr,
+                'area': area, 'pane': pane,
+            }
+        self._hex_dragging = True
+        self._hex_update_selection_display()
+
+        # Focus the textview
+        textview.grab_focus()
+        return True
+
+    def _hex_on_motion(self, textview, event):
+        if not getattr(self, '_hex_dragging', False):
+            return False
+        sel = getattr(self, '_hex_sel', None)
+        if sel is None:
+            return False
+        pane = self.textview.index(textview)
+        if sel['pane'] != pane:
+            return False
+        result = self._hex_coords_to_byte(textview, event.x, event.y)
+        if result is None:
+            return False
+        addr, _ = result
+
+        # Update cursor position and place buffer cursor
+        sel['cursor'] = addr
+        from meld.hexdiff import hex_positions_for_byte, BYTES_PER_ROW
+        byte_idx = addr % BYTES_PER_ROW
+        line = addr // BYTES_PER_ROW
+        hex_start, _, _ = hex_positions_for_byte(byte_idx)
+        buf = self.textbuffer[pane]
+        last_line = self._hex_last_data_line(buf)
+        if line <= last_line:
+            target_it = buf.get_iter_at_line_offset(line, hex_start)
+            buf.place_cursor(target_it)
+            textview.scroll_to_mark(buf.get_insert(), 0.1, False, 0, 0)
+        self._hex_update_selection_display()
+        return True
+
+    def _hex_on_button_release(self, textview, event):
+        if event.button != 1:
+            return False
+        self._hex_dragging = False
+        return False
+
+    # -- Hex selection: display --
+
+    def _hex_get_sel_tag(self, buf, tag_name, is_primary):
+        """Get or create a selection display tag."""
+        tag = buf.get_tag_table().lookup(tag_name)
+        if tag is None:
+            if is_primary:
+                tag = buf.create_tag(
+                    tag_name,
+                    background='#404040',
+                    foreground='#ffffff',
+                )
+            else:
+                tag = buf.create_tag(
+                    tag_name,
+                    background='#808080',
+                    foreground='#ffffff',
+                )
+            tag.set_priority(buf.get_tag_table().get_size() - 1)
+        return tag
+
+    def _hex_update_selection_display(self):
+        """Update visual selection tags across all panes."""
+        from meld.hexdiff import (
+            BYTES_PER_ROW, hex_positions_for_byte,
+        )
+
+        # Clear all selection tags on all panes
+        for buf in self.textbuffer:
+            for tag_name in ('hex-sel-primary', 'hex-sel-mirror'):
+                tag = buf.get_tag_table().lookup(tag_name)
+                if tag:
+                    buf.remove_tag(tag, buf.get_start_iter(),
+                                   buf.get_end_iter())
+
+        sel = getattr(self, '_hex_sel', None)
+        if sel is None:
+            return
+
+        lo = min(sel['anchor'], sel['cursor'])
+        hi = max(sel['anchor'], sel['cursor'])
+        pane = sel['pane']
+        area = sel['area']
+
+        if lo == hi:
+            return
+
+        buf = self.textbuffer[pane]
+        primary_tag = self._hex_get_sel_tag(buf, 'hex-sel-primary', True)
+        mirror_tag = self._hex_get_sel_tag(buf, 'hex-sel-mirror', False)
+
+        last_line = self._hex_last_data_line(buf)
+
+        for addr in range(lo, hi + 1):
+            line = addr // BYTES_PER_ROW
+            if line > last_line:
+                break
+            byte_idx = addr % BYTES_PER_ROW
+            hs, he, ac = hex_positions_for_byte(byte_idx)
+
+            line_it = buf.get_iter_at_line(line)
+            chars = line_it.get_chars_in_line()
+            if chars <= he:
+                continue
+
+            if area == 'hex':
+                ptag, mtag = primary_tag, mirror_tag
+            else:
+                ptag, mtag = mirror_tag, primary_tag
+
+            # Hex region
+            s = buf.get_iter_at_line_offset(line, hs)
+            e = buf.get_iter_at_line_offset(line, he)
+            buf.apply_tag(ptag, s, e)
+
+            # Space after hex pair (merge with next if consecutive)
+            if he < chars and addr < hi:
+                next_byte_idx = (addr + 1) % BYTES_PER_ROW
+                if next_byte_idx != 0:
+                    next_hs = hex_positions_for_byte(next_byte_idx)[0]
+                    s = buf.get_iter_at_line_offset(line, he)
+                    e = buf.get_iter_at_line_offset(line, next_hs)
+                    buf.apply_tag(ptag, s, e)
+
+            # ASCII region
+            if ac + 1 <= chars:
+                s = buf.get_iter_at_line_offset(line, ac)
+                e = buf.get_iter_at_line_offset(line, ac + 1)
+                buf.apply_tag(mtag, s, e)
 
     def _on_hex_selection_coupling_changed(self, action, state):
         action.set_state(state)
@@ -2901,11 +3118,66 @@ class FileDiff(Gtk.Box, MeldDoc):
 
     @with_focused_pane
     def action_copy(self, pane, *args):
+        sel = getattr(self, '_hex_sel', None)
+        if sel and sel['pane'] == pane:
+            text = self._hex_get_selection_text(sel)
+            if text:
+                view = self.textview[pane]
+                clipboard = view.get_clipboard(Gdk.SELECTION_CLIPBOARD)
+                clipboard.set_text(text, -1)
+                return
+
         buffer = self.textbuffer[pane]
         view = self.textview[pane]
 
         clipboard = view.get_clipboard(Gdk.SELECTION_CLIPBOARD)
         buffer.copy_clipboard(clipboard)
+
+    def _hex_get_selection_text(self, sel):
+        """Extract hex or ASCII text from the current hex selection."""
+        from meld.hexdiff import BYTES_PER_ROW, hex_positions_for_byte
+
+        buf = self.textbuffer[sel['pane']]
+        lo = min(sel['anchor'], sel['cursor'])
+        hi = max(sel['anchor'], sel['cursor'])
+        if lo == hi:
+            return None
+
+        last_line = self._hex_last_data_line(buf)
+        area = sel['area']
+        parts = []
+
+        def get_line_text(line_num):
+            start = buf.get_iter_at_line(line_num)
+            end = start.copy()
+            if not end.ends_line():
+                end.forward_to_line_end()
+            return buf.get_text(start, end, False)
+
+        if area == 'hex':
+            for addr in range(lo, hi + 1):
+                line = addr // BYTES_PER_ROW
+                if line > last_line:
+                    break
+                byte_idx = addr % BYTES_PER_ROW
+                hs, he, _ = hex_positions_for_byte(byte_idx)
+                text = get_line_text(line)
+                if he <= len(text):
+                    if parts:
+                        parts.append(' ')
+                    parts.append(text[hs:he])
+            return ''.join(parts)
+        else:
+            for addr in range(lo, hi + 1):
+                line = addr // BYTES_PER_ROW
+                if line > last_line:
+                    break
+                byte_idx = addr % BYTES_PER_ROW
+                _, _, ac = hex_positions_for_byte(byte_idx)
+                text = get_line_text(line)
+                if ac < len(text):
+                    parts.append(text[ac])
+            return ''.join(parts)
 
     @with_focused_pane
     def action_paste(self, pane, *args):

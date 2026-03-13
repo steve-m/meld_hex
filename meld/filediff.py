@@ -1056,37 +1056,15 @@ class FileDiff(Gtk.Box, MeldDoc):
             tag.set_priority(buf.get_tag_table().get_size() - 1)
         return tag
 
-    def _hex_update_selection_display(self):
-        """Update visual selection tags across all panes."""
+    def _hex_apply_selection_to_pane(self, pane, lo, hi, area):
+        """Apply selection highlight tags to a single pane."""
         from meld.hexdiff import (
             BYTES_PER_ROW, hex_positions_for_byte,
         )
 
-        # Clear all selection tags on all panes
-        for buf in self.textbuffer:
-            for tag_name in ('hex-sel-primary', 'hex-sel-mirror'):
-                tag = buf.get_tag_table().lookup(tag_name)
-                if tag:
-                    buf.remove_tag(tag, buf.get_start_iter(),
-                                   buf.get_end_iter())
-
-        sel = getattr(self, '_hex_sel', None)
-        if sel is None:
-            return
-
-        lo = min(sel['anchor'], sel['cursor'])
-        hi = max(sel['anchor'], sel['cursor'])
-        pane = sel['pane']
-        area = sel['area']
-
-        if lo == hi:
-            self._hex_update_statusbar_info(pane)
-            return
-
         buf = self.textbuffer[pane]
         primary_tag = self._hex_get_sel_tag(buf, 'hex-sel-primary', True)
         mirror_tag = self._hex_get_sel_tag(buf, 'hex-sel-mirror', False)
-
         last_line = self._hex_last_data_line(buf)
 
         for addr in range(lo, hi + 1):
@@ -1126,6 +1104,41 @@ class FileDiff(Gtk.Box, MeldDoc):
                 e = buf.get_iter_at_line_offset(line, ac + 1)
                 buf.apply_tag(mtag, s, e)
 
+    def _hex_update_selection_display(self):
+        """Update visual selection tags across all panes."""
+        # Clear all selection tags on all panes
+        for buf in self.textbuffer:
+            for tag_name in ('hex-sel-primary', 'hex-sel-mirror'):
+                tag = buf.get_tag_table().lookup(tag_name)
+                if tag:
+                    buf.remove_tag(tag, buf.get_start_iter(),
+                                   buf.get_end_iter())
+
+        sel = getattr(self, '_hex_sel', None)
+        if sel is None:
+            return
+
+        lo = min(sel['anchor'], sel['cursor'])
+        hi = max(sel['anchor'], sel['cursor'])
+        pane = sel['pane']
+        area = sel['area']
+
+        if lo == hi:
+            self._hex_update_statusbar_info(pane)
+            return
+
+        # Apply to the active pane
+        self._hex_apply_selection_to_pane(pane, lo, hi, area)
+
+        # Apply to coupled panes
+        action = self.prop_action_group.lookup_action(
+            'hex-selection-coupling')
+        if action and action.get_state().get_boolean():
+            for p in range(self.num_panes):
+                if p != pane:
+                    self._hex_apply_selection_to_pane(p, lo, hi, area)
+                    self._hex_update_statusbar_info(p)
+
         # Update statusbar with selection info
         self._hex_update_statusbar_info(pane)
 
@@ -1141,6 +1154,8 @@ class FileDiff(Gtk.Box, MeldDoc):
             for p in range(self.num_panes):
                 if p != focused_pane:
                     self._hex_clear_highlight(p)
+        # Refresh selection display for coupling change
+        self._hex_update_selection_display()
 
     def _get_hex_highlight_tag(self, buf):
         """Get or create the tag used for hex/ASCII cross-highlighting."""

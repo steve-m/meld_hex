@@ -2427,6 +2427,33 @@ class FileDiff(Gtk.Box, MeldDoc):
         while next(step) is None:
             yield 1
 
+        # In hex mode, conflicts are not meaningful since we do
+        # byte-level comparison.  Convert them to replace so the
+        # background shows as "changed" instead of "conflict".
+        if getattr(self, '_hex_mode', False) and self.num_panes == 3:
+            from meld.matchers.myers import DiffChunk
+            new_cache = []
+            for c0, c1 in self.linediffer._merge_cache:
+                if c0 and c0.tag == 'conflict':
+                    c0 = DiffChunk._make(
+                        ('replace',) + tuple(c0)[1:])
+                if c1 and c1.tag == 'conflict':
+                    c1 = DiffChunk._make(
+                        ('replace',) + tuple(c1)[1:])
+                new_cache.append((c0, c1))
+            self.linediffer._merge_cache = new_cache
+            self.linediffer.conflicts = []
+            # Refresh chunkmaps and gutters with corrected tags
+            for pane in range(self.num_panes):
+                self.chunkmap[pane].chunks = list(
+                    self.linediffer.single_changes(pane))
+            for gutter in self.actiongutter:
+                from_pane = self.textview.index(gutter.source_view)
+                to_pane = self.textview.index(gutter.target_view)
+                gutter.chunks = list(
+                    self.linediffer.paired_all_single_changes(
+                        from_pane, to_pane))
+
         if not refresh:
             for buf in self.textbuffer:
                 buf.place_cursor(buf.get_start_iter())

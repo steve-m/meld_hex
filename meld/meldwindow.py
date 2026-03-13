@@ -31,6 +31,7 @@ from meld.const import (
 )
 from meld.dirdiff import DirDiff
 from meld.filediff import FileDiff
+from meld.hexdiff import files_are_binary, prepare_hex_filediff
 from meld.imagediff import ImageDiff, files_are_images
 from meld.melddoc import ComparisonState, MeldDoc
 from meld.menuhelpers import replace_menu_section
@@ -378,13 +379,22 @@ class MeldWindow(Gtk.ApplicationWindow):
             self, gfiles, *, encodings=None, merge_output=None, meta=None):
         assert len(gfiles) in (1, 2, 3)
 
-        # Check whether to show image window or not.
+        # Check whether to show image window, hex view, or text diff.
         if files_are_images(gfiles):
             doc = ImageDiff(len(gfiles))
+            self._append_page(doc)
+            doc.set_files(gfiles, encodings)
+        elif files_are_binary(gfiles):
+            doc = FileDiff(len(gfiles))
+            prepare_hex_filediff(doc, gfiles)
+            self._append_page(doc)
+            doc.set_files(gfiles, encodings)
+            labels = [f.get_path() if f else '' for f in gfiles]
+            doc.set_labels(labels)
         else:
             doc = FileDiff(len(gfiles))
-        self._append_page(doc)
-        doc.set_files(gfiles, encodings)
+            self._append_page(doc)
+            doc.set_files(gfiles, encodings)
         if merge_output is not None:
             doc.set_merge_output_file(merge_output)
         if meta is not None:

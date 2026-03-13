@@ -145,10 +145,11 @@ class MeldStatusBar(Gtk.Statusbar):
         self.pack_end(self.box_box, False, True, 0)
         self.box_box.pack_end(
             self.construct_line_display(), False, True, 0)
-        self.box_box.pack_end(
-            self.construct_highlighting_selector(), False, True, 0)
-        self.box_box.pack_end(
-            self.construct_encoding_selector(), False, True, 0)
+        if not getattr(self, '_hex_mode', False):
+            self.box_box.pack_end(
+                self.construct_highlighting_selector(), False, True, 0)
+            self.box_box.pack_end(
+                self.construct_encoding_selector(), False, True, 0)
         self.box_box.pack_end(
             self.construct_display_popover(), False, True, 0)
         self.box_box.show_all()
@@ -157,24 +158,49 @@ class MeldStatusBar(Gtk.Statusbar):
 
         # Note that we're receiving one-based line numbers from the
         # user and storing and emitting zero-base line numbers.
+        # In hex mode, the entry accepts hex addresses and emits them
+        # directly via 'go-to-line'.
 
         def go_to_line_text(text):
-            try:
-                line = int(text)
-            except ValueError:
-                return
-            self.emit('go-to-line', max(0, line - 1))
+            if getattr(self, '_hex_mode', False):
+                try:
+                    text = text.strip()
+                    if text.lower().startswith('0x'):
+                        text = text[2:]
+                    addr = int(text, 16) if text else 0
+                except ValueError:
+                    return
+                self.emit('go-to-line', addr)
+            else:
+                try:
+                    line = int(text)
+                except ValueError:
+                    return
+                self.emit('go-to-line', max(0, line - 1))
 
         def line_entry_mapped(entry):
-            line, offset = self.props.cursor_position
-            entry.set_text(str(line + 1))
+            cursor = self.props.cursor_position
+            if cursor is None:
+                return
+            line, offset = cursor
+            if getattr(self, '_hex_mode', False):
+                entry.set_text(f'0x{line + 1:X}')
+            else:
+                entry.set_text(str(line + 1))
 
         # This handler causes a failed assertion due to the `position`
         # out param (see pygobject#12), but we don't need it here.
         def line_entry_insert_text(entry, new_text, length, position):
-            if not new_text.isdigit():
-                GObject.signal_stop_emission_by_name(entry, 'insert-text')
-                return
+            if getattr(self, '_hex_mode', False):
+                if not all(c in '0123456789abcdefABCDEFxX' for c in new_text):
+                    GObject.signal_stop_emission_by_name(
+                        entry, 'insert-text')
+                    return
+            else:
+                if not new_text.isdigit():
+                    GObject.signal_stop_emission_by_name(
+                        entry, 'insert-text')
+                    return
 
         def line_entry_changed(entry):
             go_to_line_text(entry.get_text())

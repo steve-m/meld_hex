@@ -15,6 +15,7 @@ folders = {
     'filediff.py',
     'filters.py',
     'gutterrendererchunk.py',
+    'hexdiff.py',
     'imagediff.py',
     'iohelpers.py',
     'linkmap.py',

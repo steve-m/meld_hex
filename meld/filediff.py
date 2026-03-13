@@ -483,10 +483,23 @@ class FileDiff(Gtk.Box, MeldDoc):
                     return
                 self.set_file(pane, buffer.data.gfile, encoding)
 
-            def go_to_line(widget, line, pane):
-                if self.cursor.pane == pane and self.cursor.line == line:
+            def go_to_line(widget, line_or_addr, pane):
+                if getattr(self, '_hex_mode', False):
+                    from meld.hexdiff import address_to_line_col
+                    buf_line, col = address_to_line_col(line_or_addr)
+                    buf = self.textbuffer[pane]
+                    it = buf.get_iter_at_line(buf_line)
+                    if it.get_chars_in_line() > col:
+                        it = buf.get_iter_at_line_offset(buf_line, col)
+                    buf.place_cursor(it)
+                    self.textview[pane].scroll_to_mark(
+                        buf.get_insert(), 0.1, True, 0.5, 0.5)
+                    cursor_it = buf.get_iter_at_mark(buf.get_insert())
+                    self._update_hex_highlight(pane, buf, cursor_it)
                     return
-                self.move_cursor(pane, line, focus=False)
+                if self.cursor.pane == pane and self.cursor.line == line_or_addr:
+                    return
+                self.move_cursor(pane, line_or_addr, focus=False)
 
             pane = self.statusbar.index(statusbar)
             statusbar.connect('encoding-changed', reload_with_encoding, pane)
@@ -558,6 +571,8 @@ class FileDiff(Gtk.Box, MeldDoc):
             sourcemap.props.compact_view = style == 'compact-sourcemap'
 
     def get_filter_visibility(self) -> Tuple[bool, bool, bool]:
+        if getattr(self, '_hex_mode', False):
+            return False, False, False
         return True, False, False
 
     def get_conflict_visibility(self) -> bool:
@@ -630,6 +645,15 @@ class FileDiff(Gtk.Box, MeldDoc):
         textview = self.textview[self.textbuffer.index(buf)]
 
         cursor_it = buf.get_iter_at_offset(from_value)
+
+        if getattr(self, '_hex_mode', False):
+            from meld.hexdiff import hex_address_from_cursor
+            line = cursor_it.get_line()
+            col = cursor_it.get_line_offset()
+            # Return (address - 1, 0) because status bar adds 1
+            addr = hex_address_from_cursor(line, col)
+            return (addr - 1, 0)
+
         offset = textview.get_visual_column(cursor_it)
         line = cursor_it.get_line()
 
@@ -677,6 +701,141 @@ class FileDiff(Gtk.Box, MeldDoc):
             self.cursor.next_conflict = next_conflict
 
         self.cursor.line = line
+
+        if getattr(self, '_hex_mode', False):
+            self._update_hex_highlight(pane, buf, cursor_it)
+
+    def _apply_hex_byte_highlight(self, bufs, tags, iters_a, iters_b):
+        """Apply symmetric byte-level inline highlighting for hex mode.
+
+        Compares hex bytes on corresponding lines and highlights
+        differing bytes on both sides, including their ASCII chars.
+        """
+        from meld.hexdiff import hex_positions_for_byte, BYTES_PER_ROW
+
+        def get_line_text(buf, line_num):
+            start = buf.get_iter_at_line(line_num)
+            end = start.copy()
+            if not end.ends_line():
+                end.forward_to_line_end()
+            return buf.get_text(start, end, False)
+
+        def highlight_data_portion(buf, tag, line_num):
+            it = buf.get_iter_at_line(line_num)
+            if it.get_chars_in_line() > 10:
+                s = buf.get_iter_at_line_offset(line_num, 10)
+                e = it.copy()
+                if not e.ends_line():
+                    e.forward_to_line_end()
+                buf.apply_tag(tag, s, e)
+
+        start_a = iters_a[0].get_line()
+        end_a = iters_a[1].get_line()
+        start_b = iters_b[0].get_line()
+        end_b = iters_b[1].get_line()
+
+        # Don't include the final line if iter is at its start
+        if iters_a[1].get_line_offset() == 0 and end_a > start_a:
+            end_a -= 1
+        if iters_b[1].get_line_offset() == 0 and end_b > start_b:
+            end_b -= 1
+
+        lines_a = end_a - start_a + 1
+        lines_b = end_b - start_b + 1
+        paired = min(lines_a, lines_b)
+
+        for i in range(paired):
+            text_a = get_line_text(bufs[0], start_a + i)
+            text_b = get_line_text(bufs[1], start_b + i)
+
+            for byte_idx in range(BYTES_PER_ROW):
+                hs, he, ac = hex_positions_for_byte(byte_idx)
+
+                hex_a = text_a[hs:he] if he <= len(text_a) else '  '
+                hex_b = text_b[hs:he] if he <= len(text_b) else '  '
+
+                if hex_a == hex_b:
+                    continue
+
+                # Highlight hex pair on both sides
+                for side, line in ((0, start_a + i), (1, start_b + i)):
+                    buf, tag = bufs[side], tags[side]
+                    it = buf.get_iter_at_line(line)
+                    chars = it.get_chars_in_line()
+                    if he <= chars:
+                        s = buf.get_iter_at_line_offset(line, hs)
+                        e = buf.get_iter_at_line_offset(line, he)
+                        buf.apply_tag(tag, s, e)
+                    if ac + 1 <= chars:
+                        s = buf.get_iter_at_line_offset(line, ac)
+                        e = buf.get_iter_at_line_offset(line, ac + 1)
+                        buf.apply_tag(tag, s, e)
+
+        # Highlight data portion of unpaired extra lines
+        for i in range(paired, lines_a):
+            highlight_data_portion(bufs[0], tags[0], start_a + i)
+        for i in range(paired, lines_b):
+            highlight_data_portion(bufs[1], tags[1], start_b + i)
+
+    def _get_hex_highlight_tag(self, buf):
+        """Get or create the tag used for hex/ASCII cross-highlighting."""
+        tag = buf.get_tag_table().lookup('hex-highlight')
+        if tag is None:
+            tag = buf.create_tag(
+                'hex-highlight',
+                background_rgba=Gdk.RGBA(0.4, 0.4, 0.4, 0.25),
+            )
+            tag.set_priority(buf.get_tag_table().get_size() - 1)
+        return tag
+
+    def _update_hex_highlight(self, pane, buf, cursor_it):
+        """Highlight the hex byte and its ASCII representation."""
+        from meld.hexdiff import byte_index_from_col, hex_positions_for_byte
+
+        tag = self._get_hex_highlight_tag(buf)
+
+        # Remove previous highlight efficiently
+        prev = getattr(self, '_hex_highlight_prev', {}).get(pane)
+        if prev is not None:
+            prev_line, prev_hs, prev_he, prev_ac = prev
+            line_it = buf.get_iter_at_line(prev_line)
+            line_chars = line_it.get_chars_in_line()
+            if line_chars > prev_he:
+                s = buf.get_iter_at_line_offset(prev_line, prev_hs)
+                e = buf.get_iter_at_line_offset(prev_line, prev_he)
+                buf.remove_tag(tag, s, e)
+            if line_chars > prev_ac + 1:
+                s = buf.get_iter_at_line_offset(prev_line, prev_ac)
+                e = buf.get_iter_at_line_offset(prev_line, prev_ac + 1)
+                buf.remove_tag(tag, s, e)
+
+        line = cursor_it.get_line()
+        col = cursor_it.get_line_offset()
+        byte_idx = byte_index_from_col(col)
+
+        if not hasattr(self, '_hex_highlight_prev'):
+            self._hex_highlight_prev = {}
+
+        if byte_idx is None:
+            self._hex_highlight_prev[pane] = None
+            return
+
+        hex_start, hex_end, ascii_col = hex_positions_for_byte(byte_idx)
+
+        line_it = buf.get_iter_at_line(line)
+        line_chars = line_it.get_chars_in_line()
+
+        if line_chars > hex_end:
+            s = buf.get_iter_at_line_offset(line, hex_start)
+            e = buf.get_iter_at_line_offset(line, hex_end)
+            buf.apply_tag(tag, s, e)
+        if line_chars > ascii_col + 1:
+            s = buf.get_iter_at_line_offset(line, ascii_col)
+            e = buf.get_iter_at_line_offset(line, ascii_col + 1)
+            buf.apply_tag(tag, s, e)
+
+        self._hex_highlight_prev[pane] = (
+            line, hex_start, hex_end, ascii_col)
 
     def on_current_diff_changed(self, *args):
         try:
@@ -1645,7 +1804,12 @@ class FileDiff(Gtk.Box, MeldDoc):
         # either a custom label or the fallback
         self.filelabel[pane].props.gfile = gfile
 
-        if buf.data.is_special:
+        hex_stream = getattr(self, '_hex_streams', {}).get(pane)
+        if hex_stream:
+            source_file = GtkSource.File()
+            loader = GtkSource.FileLoader.new_from_stream(
+                buf, source_file, hex_stream)
+        elif buf.data.is_special:
             loader = GtkSource.FileLoader.new_from_stream(
                 buf, buf.data.sourcefile, buf.data.gfile.read())
         else:
@@ -1977,6 +2141,16 @@ class FileDiff(Gtk.Box, MeldDoc):
                 text1 = bufs[0].get_text(*buf_from_iters, False)
                 textn = bufs[1].get_text(*buf_to_iters, False)
 
+                # In hex mode, use byte-level comparison instead of
+                # character-level diff for correct symmetric highlighting
+                if getattr(self, '_hex_mode', False):
+                    if clear:
+                        bufs[0].remove_tag(tags[0], *buf_from_iters)
+                        bufs[1].remove_tag(tags[1], *buf_to_iters)
+                    self._apply_hex_byte_highlight(
+                        bufs, tags, buf_from_iters, buf_to_iters)
+                    continue
+
                 # Bail on long sequences, rather than try a slow comparison
                 inline_limit = 20000
                 if len(text1) + len(textn) > inline_limit and \
@@ -2286,6 +2460,8 @@ class FileDiff(Gtk.Box, MeldDoc):
         self.set_buffer_editable(buf, writable)
 
     def set_buffer_editable(self, buf, editable):
+        if getattr(self, '_hex_mode', False):
+            editable = False
         index = self.textbuffer.index(buf)
         self.readonlytoggle[index].set_active(not editable)
         self.readonlytoggle[index].get_child().props.icon_name = (

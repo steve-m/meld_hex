@@ -746,9 +746,14 @@ class FileDiff(Gtk.Box, MeldDoc):
 
         sel = getattr(self, '_hex_sel', None)
         sel_start = sel_end = None
-        if sel and sel['pane'] == pane and sel['anchor'] != sel['cursor']:
-            sel_start = min(sel['anchor'], sel['cursor'])
-            sel_end = max(sel['anchor'], sel['cursor'])
+        if sel and sel['anchor'] != sel['cursor']:
+            is_sel_pane = sel['pane'] == pane
+            coupling = self.prop_action_group.lookup_action(
+                'hex-selection-coupling')
+            coupled = coupling and coupling.get_state().get_boolean()
+            if is_sel_pane or coupled:
+                sel_start = min(sel['anchor'], sel['cursor'])
+                sel_end = max(sel['anchor'], sel['cursor'])
 
         if pane < len(self.statusbar):
             self.statusbar[pane]._hex_update_info_label(

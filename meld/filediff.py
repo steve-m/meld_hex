@@ -729,6 +729,26 @@ class FileDiff(Gtk.Box, MeldDoc):
 
         if getattr(self, '_hex_mode', False):
             self._update_hex_highlight(pane, buf, cursor_it)
+            self._hex_update_statusbar_info(pane)
+
+    def _hex_update_statusbar_info(self, pane):
+        """Update the statusbar hex info label for the given pane."""
+        from meld.hexdiff import hex_address_from_cursor, byte_index_from_col
+        buf = self.textbuffer[pane]
+        cursor_it = buf.get_iter_at_mark(buf.get_insert())
+        line = cursor_it.get_line()
+        col = cursor_it.get_line_offset()
+        offset = hex_address_from_cursor(line, col)
+
+        sel = getattr(self, '_hex_sel', None)
+        sel_start = sel_end = None
+        if sel and sel['pane'] == pane and sel['anchor'] != sel['cursor']:
+            sel_start = min(sel['anchor'], sel['cursor'])
+            sel_end = max(sel['anchor'], sel['cursor'])
+
+        if pane < len(self.statusbar):
+            self.statusbar[pane]._hex_update_info_label(
+                offset, sel_start, sel_end)
 
     def _apply_hex_byte_highlight(self, bufs, tags, iters_a, iters_b):
         """Apply symmetric byte-level inline highlighting for hex mode.
@@ -1053,6 +1073,7 @@ class FileDiff(Gtk.Box, MeldDoc):
         area = sel['area']
 
         if lo == hi:
+            self._hex_update_statusbar_info(pane)
             return
 
         buf = self.textbuffer[pane]
@@ -1097,6 +1118,9 @@ class FileDiff(Gtk.Box, MeldDoc):
                 s = buf.get_iter_at_line_offset(line, ac)
                 e = buf.get_iter_at_line_offset(line, ac + 1)
                 buf.apply_tag(mtag, s, e)
+
+        # Update statusbar with selection info
+        self._hex_update_statusbar_info(pane)
 
     def _on_hex_selection_coupling_changed(self, action, state):
         action.set_state(state)

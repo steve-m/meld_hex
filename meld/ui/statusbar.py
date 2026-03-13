@@ -139,6 +139,17 @@ class MeldStatusBar(Gtk.Statusbar):
     def do_realize(self):
         Gtk.Statusbar.do_realize(self)
 
+        if getattr(self, '_hex_mode', False):
+            self._hex_info_label = Gtk.Label(
+                xalign=0.0,
+                ellipsize=Pango.EllipsizeMode.END,
+                use_markup=True,
+            )
+            hbox = self.get_message_area()
+            hbox.pack_start(self._hex_info_label, False, True, 0)
+            self._hex_info_label.show()
+            self._hex_update_info_label()
+
         self.box_box = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL, spacing=6
         )
@@ -328,3 +339,30 @@ class MeldStatusBar(Gtk.Statusbar):
         button.show()
 
         return button
+
+    def _hex_update_info_label(self, offset=None, sel_start=None,
+                               sel_end=None):
+        """Update the hex info label with offset and selection info."""
+        from meld.hexdiff import format_hex_address
+
+        if not hasattr(self, '_hex_info_label'):
+            return
+
+        if offset is not None:
+            offset_text = format_hex_address(offset)
+        else:
+            offset_text = format_hex_address(0)
+
+        if sel_start is not None and sel_end is not None and \
+           sel_start != sel_end:
+            lo = min(sel_start, sel_end)
+            hi = max(sel_start, sel_end)
+            nbytes = hi - lo + 1
+            sel_text = (f'{format_hex_address(lo)} \u2013 '
+                        f'{format_hex_address(hi)} ({nbytes} bytes)')
+        else:
+            sel_text = '\u2013'
+
+        self._hex_info_label.set_markup(
+            f'<small>Offset: {offset_text}   \u2502   '
+            f'Selection: {sel_text}</small>')

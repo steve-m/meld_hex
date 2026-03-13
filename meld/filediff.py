@@ -718,6 +718,8 @@ class FileDiff(Gtk.Box, MeldDoc):
 
         Compares hex bytes on corresponding lines and highlights
         differing bytes on both sides, including their ASCII chars.
+        Consecutive differing bytes are merged into contiguous spans
+        so the separator spaces between them are also highlighted.
         """
         from meld.hexdiff import hex_positions_for_byte, BYTES_PER_ROW
 
@@ -736,6 +738,39 @@ class FileDiff(Gtk.Box, MeldDoc):
                 if not e.ends_line():
                     e.forward_to_line_end()
                 buf.apply_tag(tag, s, e)
+
+        def apply_diff_spans(buf, tag, line_num, diff_set):
+            """Highlight runs of differing bytes as contiguous spans."""
+            it = buf.get_iter_at_line(line_num)
+            chars = it.get_chars_in_line()
+
+            # Build runs of consecutive byte indices
+            runs = []
+            sorted_indices = sorted(diff_set)
+            for idx in sorted_indices:
+                if runs and idx == runs[-1][-1] + 1:
+                    runs[-1].append(idx)
+                else:
+                    runs.append([idx])
+
+            for run in runs:
+                first, last = run[0], run[-1]
+                hs_first = hex_positions_for_byte(first)[0]
+                he_last = hex_positions_for_byte(last)[1]
+                ac_first = hex_positions_for_byte(first)[2]
+                ac_last = hex_positions_for_byte(last)[2]
+
+                # Hex span
+                if he_last <= chars:
+                    s = buf.get_iter_at_line_offset(line_num, hs_first)
+                    e = buf.get_iter_at_line_offset(line_num, he_last)
+                    buf.apply_tag(tag, s, e)
+
+                # ASCII span
+                if ac_last + 1 <= chars:
+                    s = buf.get_iter_at_line_offset(line_num, ac_first)
+                    e = buf.get_iter_at_line_offset(line_num, ac_last + 1)
+                    buf.apply_tag(tag, s, e)
 
         start_a = iters_a[0].get_line()
         end_a = iters_a[1].get_line()
@@ -756,28 +791,17 @@ class FileDiff(Gtk.Box, MeldDoc):
             text_a = get_line_text(bufs[0], start_a + i)
             text_b = get_line_text(bufs[1], start_b + i)
 
+            diff_set = set()
             for byte_idx in range(BYTES_PER_ROW):
                 hs, he, ac = hex_positions_for_byte(byte_idx)
-
                 hex_a = text_a[hs:he] if he <= len(text_a) else '  '
                 hex_b = text_b[hs:he] if he <= len(text_b) else '  '
+                if hex_a != hex_b:
+                    diff_set.add(byte_idx)
 
-                if hex_a == hex_b:
-                    continue
-
-                # Highlight hex pair on both sides
+            if diff_set:
                 for side, line in ((0, start_a + i), (1, start_b + i)):
-                    buf, tag = bufs[side], tags[side]
-                    it = buf.get_iter_at_line(line)
-                    chars = it.get_chars_in_line()
-                    if he <= chars:
-                        s = buf.get_iter_at_line_offset(line, hs)
-                        e = buf.get_iter_at_line_offset(line, he)
-                        buf.apply_tag(tag, s, e)
-                    if ac + 1 <= chars:
-                        s = buf.get_iter_at_line_offset(line, ac)
-                        e = buf.get_iter_at_line_offset(line, ac + 1)
-                        buf.apply_tag(tag, s, e)
+                    apply_diff_spans(bufs[side], tags[side], line, diff_set)
 
         # Highlight data portion of unpaired extra lines
         for i in range(paired, lines_a):
